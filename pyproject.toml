@@ -1,0 +1,47 @@
+[tool.poetry]
+name = "otto-workflows"
+version = "0.1.0"
+description = "Local-first, HPC-native workflow orchestration"
+authors = []
+readme = "README.md"
+packages = [{ include = "otto" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+sqlmodel = "^0.0.21"
+alembic = "^1.13"
+pydantic = "^2.0"
+typer = { version = "^0.12", extras = ["all"] }
+textual = "^0.61"
+networkx = "^3.3"
+pyyaml = "^6.0"
+rich = "^13.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+pytest-cov = "^5.0"
+ruff = "^0.4"
+mypy = "^1.10"
+
+[tool.poetry.scripts]
+otto = "otto.cli.main:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
