@@ -80,12 +80,31 @@ class TestRun:
     def test_update_run_status_with_timestamps(self, session):
         run = q.create_run(session, workflow_name="wf_ts")
         session.commit()
-        now = datetime.now(UTC)
+        now = datetime.now(UTC).replace(tzinfo=None)
         q.update_run_status(session, run.id, RunStatus.SUCCEEDED, finished_at=now)
         session.commit()
         fetched = q.get_run(session, run.id)
         assert fetched.status == RunStatus.SUCCEEDED
         assert fetched.finished_at is not None
+
+    def test_update_run_status_with_started_at(self, session):
+        run = q.create_run(session, workflow_name="wf_ts2")
+        session.commit()
+        now = datetime.now(UTC).replace(tzinfo=None)
+        q.update_run_status(session, run.id, RunStatus.RUNNING, started_at=now)
+        session.commit()
+        fetched = q.get_run(session, run.id)
+        assert fetched.status == RunStatus.RUNNING
+        assert fetched.started_at is not None
+
+    def test_get_runs_filter_by_workflow_name(self, session):
+        q.create_run(session, workflow_name="pipeline_a")
+        q.create_run(session, workflow_name="pipeline_a")
+        q.create_run(session, workflow_name="pipeline_b")
+        session.commit()
+        results = q.get_runs(session, workflow_name="pipeline_a")
+        assert len(results) == 2
+        assert all(r.workflow_name == "pipeline_a" for r in results)
 
     def test_get_run_missing(self, session):
         assert q.get_run(session, "no-such-id") is None
@@ -176,6 +195,44 @@ class TestTaskRun:
         tr = q.create_task_run(session, run_id=run.id, name="bare")
         assert q.get_active_resource_profile(tr) is None
 
+    def test_increment_attempt_without_escalation(self, session):
+        run = q.create_run(session, workflow_name="wf")
+        tr = q.create_task_run(session, run_id=run.id, name="a",
+                                resource_profiles=[{"cpus": 4}])
+        session.commit()
+        q.increment_task_run_attempt(session, tr.id)
+        session.commit()
+        fetched = q.get_task_run(session, tr.id)
+        assert fetched.attempt == 1
+        assert fetched.resource_profile_index == 0  # profile unchanged
+
+    def test_get_task_runs_filter_by_status(self, session):
+        run = q.create_run(session, workflow_name="wf")
+        q.create_task_run(session, run_id=run.id, name="a", status=TaskRunStatus.READY)
+        q.create_task_run(session, run_id=run.id, name="b", status=TaskRunStatus.PENDING)
+        q.create_task_run(session, run_id=run.id, name="c", status=TaskRunStatus.SUCCEEDED)
+        session.commit()
+        pending = q.get_task_runs_for_run(session, run.id, status=TaskRunStatus.PENDING)
+        assert len(pending) == 1
+        assert pending[0].name == "b"
+        all_tasks = q.get_task_runs_for_run(session, run.id)
+        assert len(all_tasks) == 3
+
+    def test_get_submitted_task_runs(self, session):
+        run = q.create_run(session, workflow_name="wf")
+        tr_sub = q.create_task_run(session, run_id=run.id, name="submitted",
+                                    status=TaskRunStatus.SUBMITTED)
+        tr_run = q.create_task_run(session, run_id=run.id, name="running",
+                                    status=TaskRunStatus.RUNNING)
+        _tr_pen = q.create_task_run(session, run_id=run.id, name="pending",
+                                     status=TaskRunStatus.PENDING)
+        session.commit()
+        active = q.get_submitted_task_runs(session, run.id)
+        active_ids = {t.id for t in active}
+        assert tr_sub.id in active_ids
+        assert tr_run.id in active_ids
+        assert len(active) == 2
+
 
 # ---------------------------------------------------------------------------
 # Edge tests
@@ -252,6 +309,23 @@ class TestEdge:
         session.commit()
         assert edge.kind == EdgeKind.DYNAMIC
 
+    def test_get_edges_for_upstream(self, session):
+        run = q.create_run(session, workflow_name="wf")
+        tr_a = q.create_task_run(session, run_id=run.id, name="a")
+        tr_b = q.create_task_run(session, run_id=run.id, name="b")
+        tr_c = q.create_task_run(session, run_id=run.id, name="c")
+        session.commit()
+        q.create_edge(session, run_id=run.id,
+                      upstream_task_run_id=tr_a.id,
+                      downstream_task_run_id=tr_b.id)
+        q.create_edge(session, run_id=run.id,
+                      upstream_task_run_id=tr_a.id,
+                      downstream_task_run_id=tr_c.id)
+        session.commit()
+        edges = q.get_edges_for_upstream(session, tr_a.id)
+        downstream_ids = {e.downstream_task_run_id for e in edges}
+        assert downstream_ids == {tr_b.id, tr_c.id}
+
 
 # ---------------------------------------------------------------------------
 # Artifact tests
@@ -313,6 +387,35 @@ class TestArtifact:
         missing = q.get_artifact_by_name(session, tr.id, "nonexistent")
         assert missing is None
 
+    def test_get_artifact_by_name_returns_array_parent_not_children(self, session):
+        run = q.create_run(session, workflow_name="wf")
+        tr = q.create_task_run(session, run_id=run.id, name="scatter")
+        session.commit()
+        parent, children = q.create_array_artifact(
+            session, run_id=run.id, produced_by_task_run_id=tr.id,
+            name="bams", elements=["a.bam", "b.bam"],
+        )
+        session.commit()
+        found = q.get_artifact_by_name(session, tr.id, "bams")
+        assert found is not None
+        assert found.id == parent.id
+        assert found.kind == ArtifactKind.ARRAY
+
+    def test_create_array_artifact_value_kind(self, session):
+        run = q.create_run(session, workflow_name="wf")
+        tr = q.create_task_run(session, run_id=run.id, name="count")
+        session.commit()
+        parent, children = q.create_array_artifact(
+            session, run_id=run.id, produced_by_task_run_id=tr.id,
+            name="counts", elements=["42", "17", "99"],
+            kind=ArtifactKind.VALUE,
+        )
+        session.commit()
+        assert parent.kind == ArtifactKind.ARRAY
+        assert all(c.kind == ArtifactKind.VALUE for c in children)
+        assert all(c.uri is None for c in children)
+        assert [c.value for c in children] == ["42", "17", "99"]
+
 
 # ---------------------------------------------------------------------------
 # ExternalJob tests
@@ -341,7 +444,7 @@ class TestExternalJob:
             job.id,
             status=ExternalJobStatus.SUCCEEDED,
             exit_code=0,
-            finished_at=datetime.now(UTC),
+            finished_at=datetime.now(UTC).replace(tzinfo=None),
         )
         session.commit()
         fetched = session.get(q.ExternalJob, job.id)
@@ -368,6 +471,36 @@ class TestExternalJob:
         active = q.get_active_external_jobs(session, run.id)
         assert len(active) == 1
         assert active[0].ext_id == "101"
+
+    def test_get_external_jobs_for_task_run(self, session):
+        run = q.create_run(session, workflow_name="wf")
+        tr = q.create_task_run(session, run_id=run.id, name="a")
+        session.commit()
+        q.create_external_job(session, task_run_id=tr.id, run_id=run.id,
+                               backend="slurm", ext_id="200", attempt=0)
+        q.create_external_job(session, task_run_id=tr.id, run_id=run.id,
+                               backend="slurm", ext_id="201", attempt=1)
+        session.commit()
+        jobs = q.get_external_jobs_for_task_run(session, tr.id)
+        assert len(jobs) == 2
+        assert jobs[0].ext_id == "200"  # ordered by submitted_at
+
+    def test_update_external_job_exit_reason_and_logs(self, session):
+        run = q.create_run(session, workflow_name="wf")
+        tr = q.create_task_run(session, run_id=run.id, name="a")
+        session.commit()
+        job = q.create_external_job(session, task_run_id=tr.id, run_id=run.id,
+                                     backend="slurm", ext_id="300")
+        session.commit()
+        q.update_external_job(session, job.id,
+                               status=ExternalJobStatus.FAILED,
+                               exit_code=1,
+                               exit_reason="OOM",
+                               logs_uri="s3://logs/300.log")
+        session.commit()
+        fetched = session.get(q.ExternalJob, job.id)
+        assert fetched.exit_reason == "OOM"
+        assert fetched.logs_uri == "s3://logs/300.log"
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +537,34 @@ class TestEvents:
         session.commit()
         started = q.get_events(session, event_type=EventType.RUN_STARTED)
         assert len(started) == 1
+
+    def test_filter_by_entity_id(self, session):
+        run_a = q.create_run(session, workflow_name="wf")
+        run_b = q.create_run(session, workflow_name="wf")
+        session.commit()
+        q.emit_event(session, entity_type=EventEntityType.RUN,
+                     entity_id=run_a.id, event_type=EventType.RUN_CREATED)
+        q.emit_event(session, entity_type=EventEntityType.RUN,
+                     entity_id=run_b.id, event_type=EventType.RUN_CREATED)
+        session.commit()
+        events = q.get_events(session, entity_id=run_a.id)
+        assert len(events) == 1
+        assert events[0].entity_id == run_a.id
+
+    def test_filter_by_entity_type(self, session):
+        run = q.create_run(session, workflow_name="wf")
+        tr = q.create_task_run(session, run_id=run.id, name="a")
+        session.commit()
+        q.emit_event(session, entity_type=EventEntityType.RUN,
+                     entity_id=run.id, run_id=run.id,
+                     event_type=EventType.RUN_CREATED)
+        q.emit_event(session, entity_type=EventEntityType.TASK_RUN,
+                     entity_id=tr.id, run_id=run.id,
+                     event_type=EventType.TASK_CREATED)
+        session.commit()
+        task_events = q.get_events(session, entity_type=EventEntityType.TASK_RUN)
+        assert len(task_events) == 1
+        assert task_events[0].entity_type == EventEntityType.TASK_RUN
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +612,7 @@ class TestLeases:
                                   owner="old_owner", ttl_seconds=1)
         session.commit()
         # Manually expire it
-        lease.expires_at = datetime.now(UTC) - timedelta(seconds=10)
+        lease.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=10)
         session.add(lease)
         session.commit()
 
@@ -465,10 +626,18 @@ class TestLeases:
         lease = q.acquire_lease(session, entity_type="run", entity_id="r-001",
                                   owner="loop", ttl_seconds=1)
         session.commit()
-        lease.expires_at = datetime.now(UTC) - timedelta(seconds=5)
+        lease.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=5)
         session.add(lease)
         session.commit()
 
         count = q.cleanup_expired_leases(session)
         session.commit()
         assert count == 1
+
+    def test_cleanup_expired_none_returns_zero(self, session):
+        count = q.cleanup_expired_leases(session)
+        assert count == 0
+
+    def test_release_lease_not_held_returns_false(self, session):
+        released = q.release_lease(session, "task_run", "tr-999", "nobody")
+        assert released is False

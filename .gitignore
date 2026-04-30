@@ -43,3 +43,6 @@ dmypy.json
 
 # Claude
 CLAUDE.md
+
+# Poetry local config
+poetry.toml

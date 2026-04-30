@@ -288,7 +288,7 @@ def resolve_edge(session: Session, edge_id: str) -> Edge:
     if edge is None:
         raise ValueError(f"Edge not found: {edge_id}")
     edge.status = EdgeStatus.RESOLVED
-    edge.resolved_at = datetime.now(UTC)
+    edge.resolved_at = datetime.now(UTC).replace(tzinfo=None)
     session.add(edge)
     return edge
 
@@ -549,7 +549,7 @@ def acquire_lease(
     by another owner with a non-expired lease.
     Expired leases are silently replaced.
     """
-    now = datetime.now(UTC).replace(tzinfo=None)  # naive UTC for SQLite compat
+    now = datetime.now(UTC).replace(tzinfo=None)
     stmt = (
         select(Lease)
         .where(Lease.entity_type == entity_type)
@@ -591,7 +591,7 @@ def release_lease(session: Session, entity_type: str, entity_id: str, owner: str
 
 def cleanup_expired_leases(session: Session) -> int:
     """Delete all expired leases. Returns count deleted."""
-    now = datetime.now(UTC).replace(tzinfo=None)  # naive UTC for SQLite compat
+    now = datetime.now(UTC).replace(tzinfo=None)
     stmt = select(Lease).where(Lease.expires_at <= now)
     expired = list(session.exec(stmt).all())
     for lease in expired:

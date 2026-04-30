@@ -42,6 +42,10 @@ python_version = "3.11"
 strict = false
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = "yaml"
+ignore_missing_imports = true
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
