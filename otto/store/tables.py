@@ -47,7 +47,7 @@ class RunStatus(str, enum.Enum):
 
 class TaskRunStatus(str, enum.Enum):
     PENDING        = "PENDING"
-    PENDING_SHARDS = "PENDING_SHARDS"  # waiting for upstream array to materialise
+    PENDING_SHARDS = "PENDING_SHARDS"  # waiting for upstream array to materialize
     READY          = "READY"
     SUBMITTING     = "SUBMITTING"
     SUBMITTED      = "SUBMITTED"
@@ -165,8 +165,14 @@ class TaskRun(SQLModel, table=True):
         resource_profiles:      ordered list of [{cpus, mem_gb, walltime}, ...]
         resource_profile_index: active profile (0-based); incremented on escalation
         escalate_on:            failure reasons that trigger escalation e.g. ["OOM"]
+        scatter:                input slot name to fan out over (set by planner;
+                                advance() fans the task out when it becomes READY)
+        scatter_method:         "flat" | "grouped" — how shard TaskRuns are created
         attempt:                how many times this task has been attempted
-        inputs / outputs:       data-flow snapshots, self-contained per task
+        inputs:                 wiring spec snapshot — how each input slot is sourced;
+                                set at plan time, never changed after that
+        outputs:                output declarations at plan time (set by planner);
+                                overwritten with actual values post-execution
         backend_config:         full backend config snapshot at submission time
         ready_at:               when all dependencies resolved
         submitted_at:           when handed to the backend
@@ -197,6 +203,10 @@ class TaskRun(SQLModel, table=True):
     resource_profiles:      list | None = Field(default=None, sa_column=Column(JSON))
     resource_profile_index: int         = Field(default=0)
     escalate_on:            list | None = Field(default=None, sa_column=Column(JSON))
+
+    # Scatter fan-out (set by planner; read by advance() to trigger dynamic sharding)
+    scatter:        str | None = Field(default=None)  # input slot name to scatter over
+    scatter_method: str | None = Field(default=None)  # "flat" | "grouped"
 
     # Runtime state
     status:  TaskRunStatus = Field(default=TaskRunStatus.PENDING, index=True)

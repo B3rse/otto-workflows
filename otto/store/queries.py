@@ -112,6 +112,9 @@ def create_task_run(
     resource_profiles: list | None = None,
     escalate_on: list | None = None,
     inputs: dict | None = None,
+    outputs: dict | None = None,
+    scatter: str | None = None,
+    scatter_method: str | None = None,
     parent_task_run_id: str | None = None,
     shard_index: int | None = None,
     shard_key: str | None = None,
@@ -123,9 +126,12 @@ def create_task_run(
         engine=engine,
         backend=backend,
         cmd=cmd,
-        resource_profiles=resource_profiles or [],
+        resource_profiles=resource_profiles or [],  # None → [] (no profiles)
         escalate_on=escalate_on,
-        inputs=inputs or {},
+        inputs=inputs or {},   # None → {} (no wiring — executor sees empty dict)
+        outputs=outputs,       # None kept as-is — None means "no outputs declared"
+        scatter=scatter,
+        scatter_method=scatter_method,
         parent_task_run_id=parent_task_run_id,
         shard_index=shard_index,
         shard_key=shard_key,
@@ -354,7 +360,7 @@ def create_array_artifact(
         kind=ArtifactKind.ARRAY,
         is_array=True,
     )
-    session.flush()  # populate parent.artifact_id
+    session.flush()  # populate parent.id
 
     children: list[Artifact] = []
     for i, element in enumerate(elements):
@@ -568,7 +574,7 @@ def acquire_lease(
         entity_id=entity_id,
         owner=owner,
         acquired_at=now,
-        expires_at=now + timedelta(seconds=ttl_seconds),  # naive UTC
+        expires_at=now + timedelta(seconds=ttl_seconds),
     )
     session.add(lease)
     return lease

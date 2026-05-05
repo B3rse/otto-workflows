@@ -99,7 +99,9 @@ class WorkflowTemplate(BaseModel):
         - All dependency references point to existing tasks
         - All input wiring references point to existing workflow inputs or task outputs
         - Wiring types are consistent with declared input/output types
+        - If a task wires from another task's output, that task must appear in dependencies
         - The dependency graph is a DAG (no cycles)
+        - If scatter is set, the named slot must exist in the task's declared inputs
     """
 
     name:        str
@@ -281,7 +283,7 @@ class WorkflowTemplate(BaseModel):
         return cls.model_validate(data)
 
     def to_yaml(self, path: str | Path) -> None:
-        """Serialise this template to a YAML file."""
+        """Serialize this template to a YAML file."""
         with open(path, "w") as f:
             yaml.dump(self.model_dump(exclude_none=True), f, sort_keys=False)
 
